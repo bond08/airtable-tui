@@ -1,12 +1,7 @@
-// Package termtheme best-effort detects the current terminal's own
-// configured accent color by reading its config file directly, rather
-// than relying on a live terminal query (which can lag behind a config
-// change until the terminal reloads, e.g. a symlink-based theme switcher).
-//
-// Ghostty, Kitty, and Alacritty are understood directly. For any other
-// terminal, or if detection fails for any reason, DetectAccent returns ""
-// and the caller should fall back to its own default -- this package never
-// errors, since theme detection is a nice-to-have, not a requirement.
+// Package termtheme best-effort detects the current terminal's configured
+// accent color by reading its config file directly. Ghostty, Kitty, and
+// Alacritty are understood directly; for anything else, or if detection
+// fails, DetectAccent returns "" and the caller falls back to its default.
 package termtheme
 
 import (

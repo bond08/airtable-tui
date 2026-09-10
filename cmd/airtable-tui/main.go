@@ -50,9 +50,7 @@ func run() error {
 		}
 	}
 
-	// Priority: explicit user override (config/flag) > detected from the
-	// terminal's own config file (currently Ghostty only) > ui package's
-	// built-in ANSI-index default.
+	// Priority: config/flag override > detected terminal theme > ui default.
 	accentColor := cfg.Accent
 	if accentColor == "" {
 		accentColor = termtheme.DetectAccent()

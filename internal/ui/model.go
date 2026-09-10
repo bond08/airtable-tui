@@ -24,14 +24,9 @@ import (
 // up changes made outside the TUI (e.g. in the Airtable web app).
 const pollInterval = 20 * time.Second
 
-// defaultAccentColor is the app's signature accent, applied to selection
-// highlights, borders, and title badges. Using a base-16 ANSI index (not a
-// hex value) means the terminal itself renders it using whatever color its
-// current theme actually assigns to that slot -- authentically
-// theme-derived, though that also means it won't visibly change if a
-// particular light/dark theme pair happens to reuse the same ANSI palette
-// for both (as several Ghostty theme pairs do). New's accent parameter lets
-// a user override this with their own fixed color when that's the case.
+// defaultAccentColor is a base-16 ANSI index, so the terminal renders it
+// using its own current theme. New's accentOverride parameter lets a user
+// set a fixed color instead.
 const defaultAccentColor = lipgloss.Color("5")
 
 // accentColor is set once by New and used throughout the package.
@@ -44,35 +39,23 @@ const (
 	appMarginY = 1
 )
 
-// sidebarPreviewMaxCols/Rows bound the box we ask the terminal to fit the
-// sidebar preview image within. To preserve the image's real aspect ratio
-// (rather than stretching it), imgview.Render only constrains whichever of
-// these two is the binding dimension and leaves the terminal to compute
-// the other one itself from the image's actual pixel size and the
-// terminal's real cell geometry -- which we don't know precisely (see
-// assumedCellAspect in imgview), so the computed dimension can come out
-// slightly larger than what we asked for. previewReservedRows leaves a
-// deliberately generous margin above sidebarPreviewMaxRows to absorb that,
-// rather than the tight 1-row margin that let tall images overlap
-// following text on field-dense records.
+// sidebarPreviewMaxCols/Rows bound the preview image box. imgview.Render
+// only constrains one dimension to preserve aspect ratio, so the other is
+// computed by the terminal and can come out larger than requested;
+// previewReservedRows leaves extra margin above sidebarPreviewMaxRows to
+// absorb that.
 const (
 	sidebarPreviewMaxCols = 20
 	sidebarPreviewMaxRows = 7
 	previewReservedRows   = 14
 )
 
-// kittyClearAll deletes every image placement currently drawn on screen.
-// Kitty-protocol images are an overlay bitmap, not regular text, so a
-// normal screen redraw doesn't clear them on its own -- without this, a
-// previously-shown image (the full 'i' view, or a stale sidebar preview)
-// keeps visually lingering even after the model has moved on.
+// kittyClearAll deletes every Kitty-protocol image placement on screen.
+// Images are an overlay layer, so a normal redraw doesn't clear them.
 const kittyClearAll = "\x1b_Ga=d\x1b\\"
 
-// statusColorPalette assigns a consistent, distinct color to each status
-// value (by position in the field's schema order, not by hashing the
-// string), so "Completed" is always the same color across every launch and
-// every list refresh -- that consistency is the point: it lets you filter
-// by color at a glance instead of reading each label.
+// statusColorPalette assigns each status a stable color by its position in
+// the schema's option order, not by hashing the string.
 var statusColorPalette = []lipgloss.Color{
 	"2",  // green
 	"4",  // blue
@@ -86,10 +69,9 @@ var statusColorPalette = []lipgloss.Color{
 	"3",  // yellow
 }
 
-// item adapts an airtable.Record to the list.Item interface bubbles/list
-// requires: Title(), Description(), FilterValue(). titleField is the
-// table's actual primary field name (varies per table), not hardcoded, so
-// switching tables shows the right thing instead of "(untitled)".
+// item adapts an airtable.Record to bubbles/list's Item interface.
+// titleField is the table's primary field name, so it stays correct when
+// switching tables.
 type item struct {
 	record      airtable.Record
 	titleField  string
@@ -150,9 +132,8 @@ const (
 	modeWizard
 )
 
-// pickerPurpose distinguishes what the (shared) picker overlay does with
-// the selected item, since "set status" and "filter by status" both boil
-// down to "pick one status from a list" but act differently on Enter.
+// pickerPurpose distinguishes what the shared picker overlay does with the
+// selected item on Enter.
 type pickerPurpose int
 
 const (
@@ -202,9 +183,8 @@ type Model struct {
 }
 
 // New builds the initial Model. Records and schema load via Init commands.
-// accentOverride, if non-empty, replaces the terminal-derived default
-// accent color -- a hex value like "#FF6AC1" or a base-16 ANSI index like
-// "5" both work (see lipgloss.Color). Pass "" to keep the default.
+// accentOverride, if non-empty, replaces the default accent color (hex or
+// ANSI index); pass "" to keep the default.
 func New(client *airtable.Client, table string, accentOverride string) Model {
 	if accentOverride != "" {
 		accentColor = lipgloss.Color(accentOverride)
@@ -246,11 +226,10 @@ func New(client *airtable.Client, table string, accentOverride string) Model {
 // --- Messages: the results of async commands, delivered back into Update ---
 
 // recordsPageMsg carries one page of records back from an in-progress
-// fetch. fresh marks the first page of a fetch (the caller should replace
-// rather than append). background marks the silent periodic tick refresh,
-// which accumulates pages privately and only replaces the visible list
-// once the whole fetch completes -- otherwise a large table's list would
-// visibly shrink back down to one page's worth every ~20s while refreshing.
+// fetch. fresh marks the first page (replace rather than append).
+// background marks the periodic tick refresh, which accumulates pages
+// privately and only replaces the visible list once the fetch completes,
+// so a large table's list doesn't shrink mid-poll.
 type recordsPageMsg struct {
 	records    []airtable.Record
 	nextOffset string
@@ -270,8 +249,8 @@ type imageMsg struct {
 }
 
 // previewMsg carries a rendered sidebar thumbnail back for a specific
-// record, so a slow fetch that finishes after the user has since moved on
-// doesn't clobber whatever's currently selected.
+// record; a slow fetch that finishes after the selection moved on doesn't
+// clobber the current preview (see the recordID check in Update).
 type previewMsg struct {
 	recordID string
 	rendered string
@@ -292,20 +271,17 @@ type statusUpdatedMsg struct {
 // tickMsg fires every pollInterval to trigger a background refetch.
 type tickMsg time.Time
 
-// tick schedules the next tickMsg. tea.Tick is the standard Bubbletea
-// pattern for recurring work: each tickMsg handler re-issues another tick
-// command, forming a self-sustaining loop for as long as the program runs.
+// tick schedules the next tickMsg; the handler re-issues another tick,
+// forming a loop for the life of the program.
 func tick() tea.Cmd {
 	return tea.Tick(pollInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
 
-// fetchRecordsPage kicks off (or continues) a paginated fetch of the
-// current table. Call with offset="" and fresh=true to start a new fetch;
-// the returned recordsPageMsg's nextOffset tells the caller whether to
-// call this again to continue, which is how the page-by-page chain
-// advances (see the recordsPageMsg handler in Update).
+// fetchRecordsPage kicks off (or continues) a paginated fetch. Call with
+// offset="" and fresh=true to start; the returned nextOffset tells the
+// caller whether to call again to continue (see Update's handler).
 func (m Model) fetchRecordsPage(offset string, fresh, background bool) tea.Cmd {
 	return func() tea.Msg {
 		records, next, err := m.client.ListRecordsPage(context.Background(), m.table, offset)
@@ -320,10 +296,8 @@ func (m Model) fetchSchema() tea.Cmd {
 	}
 }
 
-// fetchLinkedRecords loads every record of a linked table, so we can
-// resolve the record IDs stored in a multipleRecordLinks field to their
-// human-readable titles. Airtable's API accepts a table ID anywhere it
-// accepts a table name, so tableID works directly here.
+// fetchLinkedRecords loads a linked table's records, used to resolve
+// multipleRecordLinks IDs to human-readable titles.
 func (m Model) fetchLinkedRecords(tableID string) tea.Cmd {
 	return func() tea.Msg {
 		records, err := m.client.ListRecords(context.Background(), tableID)
@@ -331,13 +305,9 @@ func (m Model) fetchLinkedRecords(tableID string) tea.Cmd {
 	}
 }
 
-// firstImageAttachmentURL looks across every multipleAttachments field on
-// rec for the first attachment whose MIME type starts with "image/".
 // firstImageAttachmentURL finds the first image attachment on rec. When
-// preferThumbnail is true it returns Airtable's own pre-generated "large"
-// thumbnail (a few KB, already resized) instead of the full original file
-// -- much faster to fetch/decode/render, and plenty of resolution for a
-// small sidebar preview. The full 'i' view still asks for the original.
+// preferThumbnail is true it returns Airtable's pre-generated "large"
+// thumbnail instead of the full file, for a faster sidebar preview.
 func (m Model) firstImageAttachmentURL(rec airtable.Record, preferThumbnail bool) (string, bool) {
 	for _, field := range m.tableSchema.Fields {
 		if field.Type != "multipleAttachments" {
@@ -405,13 +375,9 @@ func (m Model) loadPreview(recordID, url string) tea.Cmd {
 	}
 }
 
-// maybePreviewCmd checks whether the selection has moved to a record we
-// haven't already previewed, and if so either serves it from cache or
-// switchTable changes which table the whole UI is pointed at. m.allTables
-// already holds every table's schema (fetched once at startup), so this
-// only needs to reset per-table state and refetch records -- no new schema
-// call required, though we do fetch any linked table this table references
-// that we haven't cached yet.
+// switchTable points the UI at a different table. m.allTables already has
+// every table's schema from startup, so this just resets per-table state,
+// refetches records, and fetches any linked table not already cached.
 func (m *Model) switchTable(tableName string) tea.Cmd {
 	m.table = tableName
 	for _, t := range m.allTables {
@@ -450,17 +416,13 @@ func (m *Model) switchTable(tableName string) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// returns a command to fetch+render it. Called after anything that could
-// change which record is selected (navigation, list reloads).
+// maybePreviewCmd checks whether the selection moved to a record we
+// haven't previewed yet, and if so serves it from cache or fetches it.
+// Called after anything that could change the selection. tea.ClearScreen
+// only fires when an image is actually involved on either end of the
+// transition, since kittyClearAll alone isn't reliably honored by every
+// terminal but a full ClearScreen visibly flashes if used unconditionally.
 func (m *Model) maybePreviewCmd() tea.Cmd {
-	// The lightweight Kitty "delete images" command isn't reliably honored
-	// by every terminal (confirmed empirically on this setup -- it can
-	// leave a stale image on screen), so clearing relies on tea.ClearScreen
-	// -- a full repaint, which does reliably work, but visibly flashes.
-	// To keep that flash from happening on every navigation, only fire it
-	// when this transition actually involves an image on either end
-	// (leaving one, entering one, or switching between two); navigating
-	// between two records with no attachments at all never clears.
 	hadImage := m.sidebarPreview != ""
 	needsClear := func() tea.Cmd {
 		if hadImage {
@@ -496,8 +458,7 @@ func (m *Model) maybePreviewCmd() tea.Cmd {
 	return m.loadPreview(rec.ID, url)
 }
 
-// updateStatus sets the Status field to newStatus, or clears it entirely
-// when newStatus is nil.
+// updateStatus sets Status to newStatus, or clears it if newStatus is nil.
 func (m Model) updateStatus(recordID string, newStatus any) tea.Cmd {
 	return func() tea.Msg {
 		rec, err := m.client.UpdateRecord(context.Background(), m.table, recordID, map[string]any{
@@ -520,15 +481,14 @@ func (m Model) deleteRecord(recordID string) tea.Cmd {
 	}
 }
 
-// Init runs once when the program starts. tea.Batch runs both commands
-// concurrently; both results arrive as separate messages to Update.
+// Init runs once when the program starts.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(m.fetchRecordsPage("", true, false), m.fetchSchema(), tick(), m.spinner.Tick)
 }
 
-// buildStatusColors assigns each status a color by its position in the
-// field's schema order (wrapping around the palette if there are more
-// statuses than colors), so the mapping is stable across refreshes.
+// buildStatusColors assigns each status a color by its schema order
+// position, wrapping around the palette if there are more statuses than
+// colors.
 func buildStatusColors(options []string) map[string]lipgloss.Color {
 	colors := make(map[string]lipgloss.Color, len(options))
 	for i, s := range options {
@@ -546,10 +506,7 @@ func isCompleted(status string) bool {
 // applyFilter rebuilds the visible list items from allRecords, honoring
 // filterStatus (exact match, if set) and otherwise showCompleted.
 func (m *Model) applyFilter() {
-	// Airtable's createdTime is an ISO 8601 UTC timestamp, which sorts
-	// correctly as a plain string -- no need to parse it into time.Time.
-	// Newest first; re-sorting here (rather than once after fetch) keeps
-	// order correct after a create/edit mutates m.allRecords in place.
+	// createdTime is ISO 8601, so it sorts correctly as a plain string.
 	sort.Slice(m.allRecords, func(i, j int) bool {
 		return m.allRecords[i].CreatedTime > m.allRecords[j].CreatedTime
 	})
@@ -604,10 +561,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		// Reserve appMarginX/Y around the whole app; everything below sizes
-		// itself against m.width/m.height, so this is the one place that
-		// needs to know about the margin -- View() adds it back in when
-		// composing the final frame.
+		// Reserve appMarginX/Y here; View() adds the margin back visually.
 		m.width = msg.Width - appMarginX*2
 		m.height = msg.Height - appMarginY
 		listWidth := m.width * 3 / 5
@@ -624,10 +578,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil // a successful page clears any earlier transient error
 
 		if msg.background {
-			// Accumulate silently; don't touch the visible list (or the
-			// loading spinner) until every page of this refresh is in, so
-			// a large table's list never visibly shrinks back down to one
-			// page's worth mid-poll.
+			// Accumulate silently until the whole refresh is in.
 			if msg.fresh {
 				m.bgRecords = nil
 			}
@@ -641,9 +592,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.maybePreviewCmd()
 		}
 
-		// Visible fetch (initial load, manual refresh, table switch):
-		// show each page as it arrives instead of waiting for a large
-		// table's entire record set.
+		// Visible fetch: show each page as it arrives.
 		if msg.fresh {
 			m.allRecords = msg.records
 		} else {
@@ -676,8 +625,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.statusColors = buildStatusColors(m.statusOptions)
-		// Kick off a fetch for every linked table this table references,
-		// so the detail pane can show names instead of raw record IDs.
+		// Resolve linked-record IDs to titles in the detail pane.
 		var cmds []tea.Cmd
 		for _, f := range m.tableSchema.Fields {
 			if f.Type == "multipleRecordLinks" && f.Options.LinkedTableID != "" {
@@ -693,8 +641,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sidebarPreview = msg.rendered
 			}
 		}
-		// Silently drop preview failures (e.g. unsupported format) --
-		// this is a best-effort thumbnail, not worth surfacing as m.err.
+		// Best-effort thumbnail; a failure here isn't worth m.err.
 		return m, nil
 
 	case imageMsg:
@@ -782,9 +729,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.err != nil {
-			// Errors are a dismissible banner, not a dead end: the first
-			// keypress after one just clears it, rather than the whole UI
-			// staying stuck showing only the error forever.
+			// First keypress after an error just dismisses it.
 			m.err = nil
 			return m, nil
 		}
@@ -794,10 +739,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeImage {
 			m.mode = modeList
 			m.imageContent = ""
-			// Kitty images sit in their own overlay layer that a normal
-			// redraw doesn't necessarily touch; force a full terminal
-			// repaint in addition to our own explicit clear command, so
-			// the full-screen image reliably disappears.
+			// Kitty images sit in their own overlay layer, so force a full
+			// repaint to make sure it actually disappears.
 			return m, tea.ClearScreen
 		}
 		if m.mode == modePicker {
@@ -812,9 +755,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// While the user is actively typing into the list's built-in fuzzy
-	// filter (started with "/"), don't let our single-letter shortcuts
-	// steal keystrokes -- let every key through to the list untouched.
+	// Let keystrokes through untouched while the fuzzy filter is active.
 	if m.list.FilterState() == list.Filtering {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
@@ -920,10 +861,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, copyToClipboard(m.plainDetailText(rec))
 
 	case "esc":
-		// Esc never quits the app -- only q/ctrl+c do. This is an explicit
-		// no-op at the main screen so it can't be mistaken for a quit
-		// shortcut; inside a picker/wizard, Esc still cancels that overlay
-		// and returns here, which is a different, intentional behavior.
+		// Only q/ctrl+c quit; esc is a no-op at the main screen.
 		return m, nil
 	}
 
@@ -1076,21 +1014,8 @@ func (m Model) formatFieldValue(field airtable.Field, val any) string {
 	}
 }
 
-// renderDetail formats every field of the selected record, in the table's
-// real schema order (map iteration order in Go is randomized, so we can't
-// just range over rec.Fields directly and get a stable layout).
-// renderDetail lays out every field of the selected record, in the table's
-// real schema order (map iteration order in Go is randomized, so we can't
-// just range over rec.Fields directly and get a stable layout). contentWidth
-// is the usable width inside the detail box, used to wrap long values and
-// to size the divider under the title.
-// renderDetail also returns the screen row (relative to the top of the
-// detail box) where it left blank space reserved for the sidebar image
-// preview, if one is showing -- that space comes after all the field text,
-// so its position isn't known until we've finished writing the fields.
-// plainDetailText builds a copy-paste-friendly plain-text version of a
-// record's fields -- no ANSI styling, unlike renderDetail's output, since
-// that's meant for the terminal display, not a clipboard payload.
+// plainDetailText builds a plain-text, copy-paste-friendly version of a
+// record's fields, without renderDetail's ANSI styling.
 func (m Model) plainDetailText(rec airtable.Record) string {
 	titleField := m.tableSchema.PrimaryFieldName()
 	var b strings.Builder
@@ -1112,10 +1037,8 @@ func (m Model) plainDetailText(rec airtable.Record) string {
 	return b.String()
 }
 
-// copyToClipboard sends text to the system clipboard via OSC 52, an escape
-// sequence the terminal itself intercepts (supported by Ghostty, Kitty,
-// WezTerm, iTerm2, and others) -- this works locally or over SSH, and
-// doesn't depend on any clipboard tool/library being installed.
+// copyToClipboard sends text to the system clipboard via OSC 52, which
+// works locally or over SSH without any external clipboard tool.
 func copyToClipboard(text string) tea.Cmd {
 	return func() tea.Msg {
 		payload := base64.StdEncoding.EncodeToString([]byte(text))
@@ -1130,6 +1053,9 @@ type copiedMsg struct{}
 // clearFlashMsg clears the transient status note a few seconds after it's shown.
 type clearFlashMsg struct{}
 
+// renderDetail lays out every field of the selected record in the table's
+// schema order and returns the row (relative to the detail box) reserved
+// for the sidebar image preview, if one is showing.
 func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 	rec, ok := m.selectedRecord()
 	if !ok {
@@ -1152,17 +1078,8 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 	b.WriteString(dividerStyle.Render(strings.Repeat("─", contentWidth)))
 	b.WriteString("\n\n")
 
-	// Budget how many lines actually fit in the box: total height minus
-	// top+bottom border (2) and top+bottom padding (2). If a preview is
-	// showing, reserve room for it so field text never grows into where
-	// the image will be drawn.
-	//
-	// Rather than hand-tracking a running line count (which repeatedly
-	// proved error-prone -- wrapped-text height, separator lines between
-	// fields, and similar bookkeeping are all too easy to miscount by a
-	// line or two, and any miscount here means the image overlaps real
-	// text), each candidate addition is actually rendered and measured
-	// with lipgloss.Height, a real utility function, instead of guessed.
+	// Total height minus top/bottom border and padding, reserving room for
+	// the image preview if one is showing so field text can't grow into it.
 	maxLines := m.height - 4
 	fieldsBudget := maxLines
 	if m.sidebarPreview != "" {
@@ -1204,8 +1121,6 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 		}
 		chunk.WriteString("\n")
 
-		// Would adding this field push the whole block past budget? Check
-		// by actually measuring the combined result, not by estimating.
 		candidate := b.String() + chunk.String()
 		if maxLines > 0 && lipgloss.Height(candidate) > fieldsBudget {
 			hiddenFields++
@@ -1222,12 +1137,8 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 
 	if m.sidebarPreview != "" {
 		b.WriteString("\n")
-		// previewRow is 1-indexed from the top of the detail box: border
-		// (1) + top padding (1) + however many lines the content above
-		// actually rendered to (measured, not counted by hand) + 1 to
-		// land on the row right after it. The field loop above already
-		// guaranteed this fits within the box, using the exact same
-		// measurement function.
+		// 1-indexed from the top of the detail box: border + top padding,
+		// plus the rendered height of the content above it.
 		previewRow = 2 + lipgloss.Height(b.String())
 		b.WriteString(strings.Repeat("\n", previewReservedRows))
 	}
@@ -1235,11 +1146,9 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 	return b.String(), previewRow
 }
 
-// indentBlock prepends n spaces to every line of s, for the left/right
-// margin. Plain string manipulation rather than a lipgloss margin, since
-// the caller composes this with raw ANSI escapes afterward (the image
-// preview) that lipgloss's width-aware styling would otherwise risk
-// corrupting.
+// indentBlock prepends n spaces to every line of s. Plain string
+// manipulation rather than a lipgloss margin, since the caller composes
+// this with raw Kitty escape sequences afterward.
 func indentBlock(s string, n int) string {
 	pad := strings.Repeat(" ", n)
 	lines := strings.Split(s, "\n")
@@ -1257,10 +1166,8 @@ var helpEntries = []struct{ key, label string }{
 	{"T", "table"}, {"r", "refresh"}, {"Q", "quit"},
 }
 
-// renderHelpBar builds the footer: each key in the accent color, its label
-// dimmed, separated by a subtle middle dot -- quieter and easier to scan
-// than a long run-on line. A transient flash message (e.g. after a copy)
-// replaces it briefly instead of competing alongside it.
+// renderHelpBar builds the footer showing each keybinding, or a transient
+// flash message / error in its place.
 func (m Model) renderHelpBar() string {
 	if m.err != nil {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
@@ -1289,10 +1196,7 @@ func (m Model) renderHelpBar() string {
 
 func (m Model) View() string {
 	if m.mode == modeImage {
-		// Kitty graphics escape sequences aren't normal text -- passing
-		// them through lipgloss (which measures/pads by rune width) would
-		// corrupt them, so render this mode as a raw, unstyled string.
-		// Clear first so a lingering sidebar preview doesn't show through.
+		// Raw, unstyled string: lipgloss would corrupt the Kitty escapes.
 		return kittyClearAll + m.imageContent + "\n(press any key to return)"
 	}
 
@@ -1332,15 +1236,9 @@ func (m Model) View() string {
 	out := topMargin + indentBlock(base+help, appMarginX)
 
 	if m.sidebarPreview != "" {
-		// Kitty escapes anchor at the cursor when drawn, so we can't embed
-		// this inside the lipgloss-bordered detail box (it would corrupt
-		// that box's width math). Instead, jump the cursor to the region
-		// renderDetail reserved for it and draw it there, after everything
-		// else has already been printed. Offsets account for the top/left
-		// margin added above. Reliable clearing of the *previous* image
-		// happens via tea.ClearScreen in maybePreviewCmd when the preview
-		// actually changes; kittyClearAll here is just a cheap extra
-		// safety net for this exact frame, not the primary mechanism.
+		// Kitty escapes anchor at the cursor, so this can't be embedded in
+		// the lipgloss-bordered detail box; jump to the row renderDetail
+		// reserved for it and draw it after everything else.
 		listWidth := lipgloss.Width(m.list.View())
 		row, col := previewRow+appMarginY, listWidth+4+appMarginX
 		out += kittyClearAll + fmt.Sprintf("\x1b[%d;%dH%s", row, col, m.sidebarPreview)

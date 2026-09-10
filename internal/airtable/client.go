@@ -132,12 +132,12 @@ func (c *Client) do(ctx context.Context, method, fullURL string, body any, out a
 	return lastErr
 }
 
+// backoffUnit is the base delay backoffDelay scales exponentially from.
+// A var, not a const, so tests can shrink it.
+var backoffUnit = time.Second
+
 // backoffDelay returns an exponentially increasing delay (1s, 2s, 4s, ...)
 // with a little jitter, for the given retry attempt (1-indexed).
-// backoffUnit is the base delay backoffDelay scales exponentially from.
-// A package var (not a const) so tests can shrink it and keep the suite
-// fast without changing production behavior.
-var backoffUnit = time.Second
 
 func backoffDelay(attempt int) time.Duration {
 	base := time.Duration(1<<uint(attempt-1)) * backoffUnit
@@ -161,9 +161,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 // ListRecordsPage fetches one page of records (Airtable returns up to 100
 // per page). Pass "" as offset for the first page; keep passing back the
 // returned nextOffset until it comes back "", meaning there are no more
-// pages. Exposed separately from ListRecords so a caller that wants to
-// show results as they arrive (rather than waiting for a huge table's
-// entire record set) can do so.
+// pages.
 func (c *Client) ListRecordsPage(ctx context.Context, table, offset string) (records []Record, nextOffset string, err error) {
 	params := url.Values{}
 	if offset != "" {
@@ -179,9 +177,7 @@ func (c *Client) ListRecordsPage(ctx context.Context, table, offset string) (rec
 }
 
 // ListRecords fetches every record in a table, following pagination until
-// exhausted. Use this when you need the whole set at once (e.g. a small
-// reference table); for a table that might be large and is being shown
-// directly to a user, prefer ListRecordsPage so results can stream in.
+// exhausted. Prefer ListRecordsPage when results should stream to a user.
 func (c *Client) ListRecords(ctx context.Context, table string) ([]Record, error) {
 	var all []Record
 	offset := ""

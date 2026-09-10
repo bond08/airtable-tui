@@ -16,11 +16,9 @@ type Config struct {
 	BaseID string `json:"baseId"`
 	Table  string `json:"table"`
 
-	// Accent overrides the UI's accent color. Empty (the default) means
-	// "derive it from the terminal's own theme" -- a hex value like
-	// "#FF6AC1" or a base-16 ANSI index like "5" both work, for when a
-	// user's terminal theme doesn't make that distinction clearly (e.g. a
-	// light/dark theme pair that reuses the same ANSI palette for both).
+	// Accent overrides the UI's accent color: a hex value like "#FF6AC1"
+	// or a base-16 ANSI index like "5". Empty means derive it from the
+	// terminal's own theme.
 	Accent string `json:"accent,omitempty"`
 }
 

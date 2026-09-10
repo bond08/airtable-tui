@@ -19,8 +19,7 @@ import (
 
 // editableTypes are the field types the wizard knows how to render. Any
 // other type (formula, aiText, count, multipleAttachments, rollup, ...) is
-// computed/unsupported and stays out of the wizard entirely -- new fields
-// of a *known* type become editable automatically, with no code changes.
+// computed/unsupported and stays out of the wizard entirely.
 var editableTypes = map[string]bool{
 	"singleLineText":      true,
 	"multilineText":       true,
@@ -97,9 +96,7 @@ func (w wizardChoiceItem) Description() string { return "" }
 func (w wizardChoiceItem) FilterValue() string { return string(w) }
 
 // wizardLinkItem adapts a linked record to list.Item for the
-// multipleRecordLinks picker step, showing a checkbox prefix. label is
-// precomputed by the caller (via Model.linkedRecordTitle, which resolves
-// the linked table's real primary field) rather than guessed here.
+// multipleRecordLinks picker step, showing a checkbox prefix.
 type wizardLinkItem struct {
 	recordID string
 	label    string
@@ -431,10 +428,6 @@ func (m Model) renderWizard() string {
 	}
 
 	if m.err != nil {
-		// A failed submit (network error, a field value the API rejected,
-		// ...) must be visible here -- this view has no other error
-		// surface, and the wizard's own values/step are otherwise
-		// untouched, so the user can just retry after seeing what happened.
 		content += "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
 			Render(fmt.Sprintf("Error: %v", m.err)) +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("  (press any key to dismiss)")

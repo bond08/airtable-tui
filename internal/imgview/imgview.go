@@ -37,12 +37,8 @@ func Fetch(url string) ([]byte, error) {
 }
 
 // assumedCellAspect is a typical terminal cell's width-to-height ratio in
-// pixels (cells are roughly twice as tall as they are wide in most
-// monospace fonts). We don't know the real value for the user's terminal,
-// only their fonts, but we don't need to: this is only used to decide
-// which single dimension to hand to Kitty -- the terminal itself computes
-// the other one from the image's actual pixel size, so any imprecision
-// here just shifts which axis binds, not the resulting aspect ratio.
+// pixels, used only to decide which single dimension to hand to Kitty --
+// the terminal derives the other one from the image's actual pixel size.
 const assumedCellAspect = 0.5
 
 // Render decodes image bytes and encodes them as a Kitty graphics protocol
@@ -82,11 +78,8 @@ func Render(data []byte, maxCols, maxRows uint32) (string, error) {
 }
 
 // writeKittyImage writes pngData as a chunked Kitty graphics protocol
-// sequence, in "quiet" mode (q=2). rasterm's own KittyWriteImage doesn't
-// support suppressing the terminal's confirmation response, and that
-// response -- an escape sequence the terminal sends back on stdin after
-// every image command -- collides with Bubbletea reading keyboard input,
-// which is what causes stuck/unresponsive keys after showing an image.
+// sequence in "quiet" mode (q=2), so the terminal's confirmation response
+// doesn't collide with Bubbletea reading keyboard input.
 func writeKittyImage(out io.Writer, pngData []byte, opts rasterm.KittyImgOpts) error {
 	b64 := base64.StdEncoding.EncodeToString(pngData)
 
