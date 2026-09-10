@@ -12,11 +12,24 @@ records are all read from your base's live schema, not hardcoded.
 
 ## Install
 
+### Homebrew (macOS/Linux)
+
+```sh
+brew install bond08/tap/airtable-tui
+```
+
+### Go
+
 ```sh
 go install github.com/bond08/airtable-tui/cmd/airtable-tui@latest
 ```
 
 Requires Go 1.26+.
+
+### Prebuilt binaries
+
+Download a binary for Linux, macOS, or Windows (amd64/arm64) from the
+[Releases page](https://github.com/bond08/airtable-tui/releases).
 
 ## Setup
 
