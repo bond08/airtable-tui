@@ -188,7 +188,6 @@ type Model struct {
 	wizard *wizardState // non-nil while modeWizard is active
 
 	sidebarPreview  string            // rendered preview for the current selection, if any
-	needsImageClear bool              // true for exactly one frame after an image needs clearing
 	previewCache    map[string]string // by record ID, so re-selecting doesn't re-fetch
 	lastPreviewedID string
 
@@ -454,24 +453,27 @@ func (m *Model) switchTable(tableName string) tea.Cmd {
 // returns a command to fetch+render it. Called after anything that could
 // change which record is selected (navigation, list reloads).
 func (m *Model) maybePreviewCmd() tea.Cmd {
-	// Only clear anything if there's actually an image on screen right now
-	// that needs to go away. A full tea.ClearScreen (blank-then-redraw)
-	// visibly flashes, so instead we set a one-frame flag that makes
-	// View() send just the lightweight Kitty "delete images" command
-	// (which doesn't touch text, so no flash) and then immediately reset
-	// it via clearImageOnceCmd -- see the needsImageClear field and the
-	// imageCleared message handler.
+	// The lightweight Kitty "delete images" command isn't reliably honored
+	// by every terminal (confirmed empirically on this setup -- it can
+	// leave a stale image on screen), so clearing relies on tea.ClearScreen
+	// -- a full repaint, which does reliably work, but visibly flashes.
+	// To keep that flash from happening on every navigation, only fire it
+	// when this transition actually involves an image on either end
+	// (leaving one, entering one, or switching between two); navigating
+	// between two records with no attachments at all never clears.
 	hadImage := m.sidebarPreview != ""
+	needsClear := func() tea.Cmd {
+		if hadImage {
+			return tea.ClearScreen
+		}
+		return nil
+	}
 
 	rec, ok := m.selectedRecord()
 	if !ok {
 		m.sidebarPreview = ""
 		m.lastPreviewedID = ""
-		if hadImage {
-			m.needsImageClear = true
-			return clearImageOnceCmd()
-		}
-		return nil
+		return needsClear()
 	}
 	if rec.ID == m.lastPreviewedID {
 		return nil
@@ -481,33 +483,17 @@ func (m *Model) maybePreviewCmd() tea.Cmd {
 	url, ok := m.firstImageAttachmentURL(rec, true)
 	if !ok {
 		m.sidebarPreview = ""
-		if hadImage {
-			m.needsImageClear = true
-			return clearImageOnceCmd()
-		}
-		return nil
+		return needsClear()
 	}
 	if cached, ok := m.previewCache[rec.ID]; ok {
 		m.sidebarPreview = cached
-		if hadImage {
-			m.needsImageClear = true
-			return clearImageOnceCmd()
-		}
-		return nil
+		return tea.ClearScreen // entering an image, cached or not, always clears
 	}
 	m.sidebarPreview = ""
 	if hadImage {
-		m.needsImageClear = true
-		return tea.Batch(clearImageOnceCmd(), m.loadPreview(rec.ID, url))
+		return tea.Batch(tea.ClearScreen, m.loadPreview(rec.ID, url))
 	}
 	return m.loadPreview(rec.ID, url)
-}
-
-// imageClearedMsg turns needsImageClear back off after exactly one frame.
-type imageClearedMsg struct{}
-
-func clearImageOnceCmd() tea.Cmd {
-	return func() tea.Msg { return imageClearedMsg{} }
 }
 
 // updateStatus sets the Status field to newStatus, or clears it entirely
@@ -738,10 +724,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
-
-	case imageClearedMsg:
-		m.needsImageClear = false
-		return m, nil
 
 	case statusUpdatedMsg:
 		if msg.err != nil {
@@ -1170,17 +1152,21 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 	b.WriteString(dividerStyle.Render(strings.Repeat("─", contentWidth)))
 	b.WriteString("\n\n")
 
-	// Budget how many text lines actually fit in the box: total height minus
+	// Budget how many lines actually fit in the box: total height minus
 	// top+bottom border (2) and top+bottom padding (2). If a preview is
-	// showing, reserve room for it up front so we never write field text
-	// into rows the image is about to be drawn over -- instead we stop
-	// listing fields once we'd run out of room, which keeps the reserved
-	// blank space (and thus the image) always within the visible viewport.
+	// showing, reserve room for it so field text never grows into where
+	// the image will be drawn.
+	//
+	// Rather than hand-tracking a running line count (which repeatedly
+	// proved error-prone -- wrapped-text height, separator lines between
+	// fields, and similar bookkeeping are all too easy to miscount by a
+	// line or two, and any miscount here means the image overlaps real
+	// text), each candidate addition is actually rendered and measured
+	// with lipgloss.Height, a real utility function, instead of guessed.
 	maxLines := m.height - 4
-	linesUsed := 3 // title + divider + blank line already written above
-	linesBudgetForFields := maxLines
+	fieldsBudget := maxLines
 	if m.sidebarPreview != "" {
-		linesBudgetForFields -= previewReservedRows + 1 // +1 for the blank separator line
+		fieldsBudget -= previewReservedRows + 1 // +1 for the blank separator before the image
 	}
 
 	first := true
@@ -1200,49 +1186,33 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 		formatted := m.formatFieldValue(field, val)
 		multiline := len(formatted) > 40 || strings.Contains(formatted, "\n")
 
-		// Measure the *actual* rendered height, not a flat guess: a long
-		// value word-wraps to however many lines valueStyle's width
-		// forces, which a fixed "multiline = 2 lines" estimate would
-		// badly undercount, throwing off every downstream row
-		// calculation (including where the sidebar image gets drawn).
-		var wrappedValue string
-		lineCost := 1 // label + value on one line
-		if multiline {
-			wrappedValue = valueStyle.Render(formatted)
-			lineCost = 1 + strings.Count(wrappedValue, "\n") + 1 // label line + wrapped lines
-		}
-		// Every field but the first is preceded by a blank separator line
-		// (below) -- that line must count against the budget too, or a
-		// record with many fields silently overflows by (fieldCount-1)
-		// lines with no warning.
+		var chunk strings.Builder
 		if !first {
-			lineCost++
+			chunk.WriteString("\n")
 		}
-
-		if maxLines > 0 && linesUsed+lineCost > linesBudgetForFields {
-			hiddenFields++
-			continue
-		}
-
-		if !first {
-			b.WriteString("\n")
-		}
-		first = false
-
 		label := labelStyle.Render(field.Name + ":")
 		// Long or multi-line values get their own line below the label
 		// (Description, Progress Notes, ...); short ones stay inline.
 		if multiline {
-			b.WriteString(label)
-			b.WriteString("\n")
-			b.WriteString(wrappedValue)
+			chunk.WriteString(label)
+			chunk.WriteString("\n")
+			chunk.WriteString(valueStyle.Render(formatted))
 		} else {
-			b.WriteString(label)
-			b.WriteString(" ")
-			b.WriteString(formatted)
+			chunk.WriteString(label)
+			chunk.WriteString(" ")
+			chunk.WriteString(formatted)
 		}
-		b.WriteString("\n")
-		linesUsed += lineCost
+		chunk.WriteString("\n")
+
+		// Would adding this field push the whole block past budget? Check
+		// by actually measuring the combined result, not by estimating.
+		candidate := b.String() + chunk.String()
+		if maxLines > 0 && lipgloss.Height(candidate) > fieldsBudget {
+			hiddenFields++
+			continue
+		}
+		b.WriteString(chunk.String())
+		first = false
 	}
 
 	if hiddenFields > 0 {
@@ -1252,14 +1222,13 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 
 	if m.sidebarPreview != "" {
 		b.WriteString("\n")
-		// previewRow is 1-indexed from the top of the detail box: 1 line
-		// for the border + 1 for top padding + however many lines of text
-		// we've written so far + 1 to land on the row right after them.
-		// Since we already reserved room for it above, this is guaranteed
-		// to land within the visible viewport -- no separate clamp needed.
-		previewRow = 2 + strings.Count(b.String(), "\n") + 1
-		// Leave this space blank so nothing else renders on top of where
-		// View() will draw the actual image via cursor positioning.
+		// previewRow is 1-indexed from the top of the detail box: border
+		// (1) + top padding (1) + however many lines the content above
+		// actually rendered to (measured, not counted by hand) + 1 to
+		// land on the row right after it. The field loop above already
+		// guaranteed this fits within the box, using the exact same
+		// measurement function.
+		previewRow = 2 + lipgloss.Height(b.String())
 		b.WriteString(strings.Repeat("\n", previewReservedRows))
 	}
 
@@ -1365,25 +1334,16 @@ func (m Model) View() string {
 	if m.sidebarPreview != "" {
 		// Kitty escapes anchor at the cursor when drawn, so we can't embed
 		// this inside the lipgloss-bordered detail box (it would corrupt
-		// that box's width math). Instead, jump the cursor to the blank
-		// region renderDetail reserved for it (after all the field text)
-		// and draw it there, after everything else has already been
-		// printed. Offsets account for the top/left margin added above.
-		//
-		// The clear-all is sent only on frames that actually draw an
-		// image, not on every frame (spinner ticks, keystrokes, streamed
-		// list updates, ...), which was the earlier source of visible
-		// flicker during rapid redraws like the loading spinner.
+		// that box's width math). Instead, jump the cursor to the region
+		// renderDetail reserved for it and draw it there, after everything
+		// else has already been printed. Offsets account for the top/left
+		// margin added above. Reliable clearing of the *previous* image
+		// happens via tea.ClearScreen in maybePreviewCmd when the preview
+		// actually changes; kittyClearAll here is just a cheap extra
+		// safety net for this exact frame, not the primary mechanism.
 		listWidth := lipgloss.Width(m.list.View())
 		row, col := previewRow+appMarginY, listWidth+4+appMarginX
 		out += kittyClearAll + fmt.Sprintf("\x1b[%d;%dH%s", row, col, m.sidebarPreview)
-	} else if m.needsImageClear {
-		// Navigated away from a record that had an image, to one that
-		// doesn't: nothing new to draw, but the old one needs to
-		// disappear. This is a lightweight Kitty command (only touches
-		// the image layer, not text), not a full tea.ClearScreen repaint
-		// -- that's what avoided a visible flash here.
-		out += kittyClearAll
 	}
 
 	return out
