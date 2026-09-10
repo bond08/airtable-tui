@@ -1,0 +1,4 @@
+/airtable-tui
+/bin/
+*.test
+*.out
