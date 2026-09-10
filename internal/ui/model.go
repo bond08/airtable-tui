@@ -44,13 +44,22 @@ const (
 	appMarginY = 1
 )
 
-// previewReservedRows is how many text rows renderDetail leaves blank for
-// the sidebar image preview (when one is showing), after all the field
-// text. renderDetail computes and returns exactly which row that blank
-// space starts at (it depends on how many lines the fields took), so
-// View() always draws the image into the space the text actually left
-// empty for it, rather than a fixed/guessed position.
-const previewReservedRows = 11
+// sidebarPreviewMaxCols/Rows bound the box we ask the terminal to fit the
+// sidebar preview image within. To preserve the image's real aspect ratio
+// (rather than stretching it), imgview.Render only constrains whichever of
+// these two is the binding dimension and leaves the terminal to compute
+// the other one itself from the image's actual pixel size and the
+// terminal's real cell geometry -- which we don't know precisely (see
+// assumedCellAspect in imgview), so the computed dimension can come out
+// slightly larger than what we asked for. previewReservedRows leaves a
+// deliberately generous margin above sidebarPreviewMaxRows to absorb that,
+// rather than the tight 1-row margin that let tall images overlap
+// following text on field-dense records.
+const (
+	sidebarPreviewMaxCols = 20
+	sidebarPreviewMaxRows = 7
+	previewReservedRows   = 14
+)
 
 // kittyClearAll deletes every image placement currently drawn on screen.
 // Kitty-protocol images are an overlay bitmap, not regular text, so a
@@ -392,7 +401,7 @@ func (m Model) loadPreview(recordID, url string) tea.Cmd {
 		if err != nil {
 			return previewMsg{recordID: recordID, err: err}
 		}
-		rendered, err := imgview.Render(data, 24, 10)
+		rendered, err := imgview.Render(data, sidebarPreviewMaxCols, sidebarPreviewMaxRows)
 		return previewMsg{recordID: recordID, rendered: rendered, err: err}
 	}
 }
@@ -1190,10 +1199,26 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 
 		formatted := m.formatFieldValue(field, val)
 		multiline := len(formatted) > 40 || strings.Contains(formatted, "\n")
-		lineCost := 1
+
+		// Measure the *actual* rendered height, not a flat guess: a long
+		// value word-wraps to however many lines valueStyle's width
+		// forces, which a fixed "multiline = 2 lines" estimate would
+		// badly undercount, throwing off every downstream row
+		// calculation (including where the sidebar image gets drawn).
+		var wrappedValue string
+		lineCost := 1 // label + value on one line
 		if multiline {
-			lineCost = 2
+			wrappedValue = valueStyle.Render(formatted)
+			lineCost = 1 + strings.Count(wrappedValue, "\n") + 1 // label line + wrapped lines
 		}
+		// Every field but the first is preceded by a blank separator line
+		// (below) -- that line must count against the budget too, or a
+		// record with many fields silently overflows by (fieldCount-1)
+		// lines with no warning.
+		if !first {
+			lineCost++
+		}
+
 		if maxLines > 0 && linesUsed+lineCost > linesBudgetForFields {
 			hiddenFields++
 			continue
@@ -1210,7 +1235,7 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 		if multiline {
 			b.WriteString(label)
 			b.WriteString("\n")
-			b.WriteString(valueStyle.Render(formatted))
+			b.WriteString(wrappedValue)
 		} else {
 			b.WriteString(label)
 			b.WriteString(" ")
