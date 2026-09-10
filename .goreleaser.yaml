@@ -1,0 +1,53 @@
+version: 2
+
+project_name: airtable-tui
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/airtable-tui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - repository:
+      owner: bond08
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/bond08/airtable-tui"
+    description: "A terminal client for Airtable, built with Bubble Tea"
+    license: "MIT"
+    install: |
+      bin.install "airtable-tui"
+    test: |
+      system "#{bin}/airtable-tui --version"
