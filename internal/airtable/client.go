@@ -102,7 +102,7 @@ func (c *Client) do(ctx context.Context, method, fullURL string, body any, out a
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return err
+			return fmt.Errorf("%s %s: %w", method, fullURL, err)
 		}
 
 		data, err := io.ReadAll(resp.Body)
@@ -111,9 +111,12 @@ func (c *Client) do(ctx context.Context, method, fullURL string, body any, out a
 			return err
 		}
 
-		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
+		if resp.StatusCode == http.StatusTooManyRequests {
 			lastErr = fmt.Errorf("airtable API %d: rate limited", resp.StatusCode)
-			continue
+			if attempt < maxRetries {
+				continue
+			}
+			return lastErr
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {

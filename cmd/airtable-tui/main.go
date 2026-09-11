@@ -57,7 +57,7 @@ func run() error {
 	}
 
 	client := airtable.New(cfg.PAT, cfg.BaseID)
-	model := ui.New(client, cfg.Table, accentColor)
+	model := ui.New(client, cfg.Table, accentColor, version)
 
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err = p.Run()

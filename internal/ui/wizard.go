@@ -127,7 +127,7 @@ func (m *Model) startWizard(purpose wizardPurpose, recordID string, initial map[
 		values:   initial,
 	}
 	m.mode = modeWizard
-	return m.setupWizardStep()
+	return tea.Batch(m.clearImageCmd(), m.setupWizardStep())
 }
 
 // setupWizardStep configures the widget for the current step, or switches
@@ -262,15 +262,19 @@ func (m Model) submitWizard() tea.Cmd {
 func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	w := m.wizard
 
+	if msg.String() == "esc" {
+		m.wizard = nil
+		m.mode = modeList
+		return m, nil
+	}
+
 	switch w.kind {
 	case stepReview:
 		switch msg.String() {
-		case "esc":
-			m.wizard = nil
-			m.mode = modeList
-			return m, nil
 		case "b":
-			w.step--
+			if w.step > 0 {
+				w.step--
+			}
 			return m, m.setupWizardStep()
 		case "enter":
 			return m, m.submitWizard()
@@ -281,10 +285,6 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case stepSelect:
 		switch msg.String() {
-		case "esc":
-			m.wizard = nil
-			m.mode = modeList
-			return m, nil
 		case "enter":
 			field := w.fields[w.step]
 			sel, _ := w.pickList.SelectedItem().(wizardChoiceItem)
@@ -302,10 +302,6 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case stepCheckbox:
 		switch msg.String() {
-		case "esc":
-			m.wizard = nil
-			m.mode = modeList
-			return m, nil
 		case "enter":
 			field := w.fields[w.step]
 			sel, _ := w.pickList.SelectedItem().(wizardChoiceItem)
@@ -319,10 +315,6 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case stepLink:
 		switch msg.String() {
-		case "esc":
-			m.wizard = nil
-			m.mode = modeList
-			return m, nil
 		case " ":
 			field := w.fields[w.step]
 			linked := m.linkedRecords[field.Options.LinkedTableID]
@@ -359,10 +351,6 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case stepMultiline:
 		switch msg.String() {
-		case "esc":
-			m.wizard = nil
-			m.mode = modeList
-			return m, nil
 		case "ctrl+s":
 			field := w.fields[w.step]
 			val := strings.TrimSpace(w.textArea.Value())
@@ -380,10 +368,6 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	default: // stepText
 		switch msg.String() {
-		case "esc":
-			m.wizard = nil
-			m.mode = modeList
-			return m, nil
 		case "enter":
 			field := w.fields[w.step]
 			val := strings.TrimSpace(w.textInput.Value())
@@ -435,7 +419,7 @@ func (m Model) renderWizard() string {
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accentColor).
+		BorderForeground(m.accentColor).
 		Padding(1, 2).
 		Render(content)
 

@@ -29,9 +29,6 @@ const pollInterval = 20 * time.Second
 // set a fixed color instead.
 const defaultAccentColor = lipgloss.Color("5")
 
-// accentColor is set once by New and used throughout the package.
-var accentColor lipgloss.Color = defaultAccentColor
-
 // appMarginX/Y reserve a small gap around the whole app so content doesn't
 // sit flush against the terminal edges.
 const (
@@ -180,16 +177,20 @@ type Model struct {
 	loading bool // true while a records fetch is in flight
 
 	err error
+
+	accentColor lipgloss.Color
+
+	version         string // current build version, e.g. "v1.2.3", or "dev"
+	updateAvailable string // latest release tag, set once checkForUpdate finds a newer one
 }
 
 // New builds the initial Model. Records and schema load via Init commands.
 // accentOverride, if non-empty, replaces the default accent color (hex or
 // ANSI index); pass "" to keep the default.
-func New(client *airtable.Client, table string, accentOverride string) Model {
+func New(client *airtable.Client, table string, accentOverride string, version string) Model {
+	accentColor := defaultAccentColor
 	if accentOverride != "" {
 		accentColor = lipgloss.Color(accentOverride)
-	} else {
-		accentColor = defaultAccentColor
 	}
 
 	delegate := list.NewDefaultDelegate()
@@ -203,6 +204,8 @@ func New(client *airtable.Client, table string, accentOverride string) Model {
 	l := list.New(nil, delegate, 0, 0)
 	l.Title = "Airtable: " + table
 	l.Styles.Title = titleBadge
+	l.Filter = list.UnsortedFilter
+	l.KeyMap.Filter.SetHelp("/", "search")
 
 	p := list.New(nil, delegate, 0, 0)
 	p.Styles.Title = titleBadge
@@ -220,6 +223,8 @@ func New(client *airtable.Client, table string, accentOverride string) Model {
 		allTables:     map[string]airtable.Table{},
 		linkedRecords: map[string][]airtable.Record{},
 		previewCache:  map[string]string{},
+		accentColor:   accentColor,
+		version:       version,
 	}
 }
 
@@ -416,6 +421,17 @@ func (m *Model) switchTable(tableName string) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// clearImageCmd returns tea.ClearScreen if a Kitty-protocol image is
+// currently on screen. Overlays (pickers, the wizard) draw over the detail
+// pane without repainting it, so without this the image placement from the
+// task view would otherwise persist underneath them.
+func (m *Model) clearImageCmd() tea.Cmd {
+	if m.sidebarPreview != "" {
+		return tea.ClearScreen
+	}
+	return nil
+}
+
 // maybePreviewCmd checks whether the selection moved to a record we
 // haven't previewed yet, and if so serves it from cache or fetches it.
 // Called after anything that could change the selection. tea.ClearScreen
@@ -483,7 +499,7 @@ func (m Model) deleteRecord(recordID string) tea.Cmd {
 
 // Init runs once when the program starts.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchRecordsPage("", true, false), m.fetchSchema(), tick(), m.spinner.Tick)
+	return tea.Batch(m.fetchRecordsPage("", true, false), m.fetchSchema(), tick(), m.spinner.Tick, m.checkForUpdate())
 }
 
 // buildStatusColors assigns each status a color by its schema order
@@ -653,6 +669,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeImage
 		return m, nil
 
+	case updateCheckMsg:
+		if msg.err == nil && newerVersion(m.version, msg.latest) {
+			m.updateAvailable = msg.latest
+		}
+		return m, nil
+
 	case linkedRecordsMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -809,7 +831,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.picker.SetItems(items)
 		m.pickerPurpose = purposeSetStatus
 		m.mode = modePicker
-		return m, nil
+		return m, m.clearImageCmd()
 
 	case "f":
 		items := make([]list.Item, 0, len(m.statusOptions)+2)
@@ -821,7 +843,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.picker.SetItems(items)
 		m.pickerPurpose = purposeFilter
 		m.mode = modePicker
-		return m, nil
+		return m, m.clearImageCmd()
 
 	case "T":
 		names := make([]string, 0, len(m.allTables))
@@ -837,7 +859,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.picker.SetItems(items)
 		m.pickerPurpose = purposeSwitchTable
 		m.mode = modePicker
-		return m, nil
+		return m, m.clearImageCmd()
 
 	case "d":
 		rec, ok := m.selectedRecord()
@@ -851,7 +873,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.picker.SetItems(items)
 		m.pickerPurpose = purposeConfirmDelete
 		m.mode = modePicker
-		return m, nil
+		return m, m.clearImageCmd()
 
 	case "y":
 		rec, ok := m.selectedRecord()
@@ -1014,6 +1036,17 @@ func (m Model) formatFieldValue(field airtable.Field, val any) string {
 	}
 }
 
+// skipInDetail reports whether a field should be omitted from the detail
+// view (and its plain-text equivalent): the title field itself, since it's
+// already shown as the heading, and computed/attachment types that aren't
+// meaningfully displayable as a plain value.
+func skipInDetail(field airtable.Field, titleField string) bool {
+	return field.Name == titleField ||
+		field.Type == "multipleAttachments" ||
+		field.Type == "count" ||
+		field.Type == "aiText"
+}
+
 // plainDetailText builds a plain-text, copy-paste-friendly version of a
 // record's fields, without renderDetail's ANSI styling.
 func (m Model) plainDetailText(rec airtable.Record) string {
@@ -1022,10 +1055,7 @@ func (m Model) plainDetailText(rec airtable.Record) string {
 	b.WriteString(item{record: rec, titleField: titleField}.Title())
 	b.WriteString("\n\n")
 	for _, field := range m.tableSchema.Fields {
-		if field.Name == titleField ||
-			field.Type == "multipleAttachments" ||
-			field.Type == "count" ||
-			field.Type == "aiText" {
+		if skipInDetail(field, titleField) {
 			continue
 		}
 		val, present := rec.Fields[field.Name]
@@ -1089,10 +1119,7 @@ func (m Model) renderDetail(contentWidth int) (content string, previewRow int) {
 	first := true
 	hiddenFields := 0
 	for _, field := range m.tableSchema.Fields {
-		if field.Name == titleField ||
-			field.Type == "multipleAttachments" ||
-			field.Type == "count" ||
-			field.Type == "aiText" {
+		if skipInDetail(field, titleField) {
 			continue
 		}
 		val, present := rec.Fields[field.Name]
@@ -1175,10 +1202,10 @@ func (m Model) renderHelpBar() string {
 			lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("  (press any key to dismiss)")
 	}
 	if m.flashMessage != "" {
-		return lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(m.flashMessage)
+		return lipgloss.NewStyle().Foreground(m.accentColor).Bold(true).Render(m.flashMessage)
 	}
 
-	keyStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	keyStyle := lipgloss.NewStyle().Foreground(m.accentColor).Bold(true)
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	sep := labelStyle.Render(" · ")
 
@@ -1211,7 +1238,7 @@ func (m Model) View() string {
 		Width(detailWidth-2).
 		Height(m.height-2).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accentColor).
+		BorderForeground(m.accentColor).
 		Padding(1, detailPaddingX).
 		Render(detailContent)
 
@@ -1222,7 +1249,7 @@ func (m Model) View() string {
 	if m.mode == modePicker {
 		overlay := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor).
+			BorderForeground(m.accentColor).
 			Render(m.picker.View())
 		composed := lipgloss.Place(
 			lipgloss.Width(base), lipgloss.Height(base),
@@ -1233,6 +1260,11 @@ func (m Model) View() string {
 	}
 
 	help := "\n" + m.renderHelpBar()
+	if m.updateAvailable != "" {
+		help += "\n" + lipgloss.NewStyle().Foreground(m.accentColor).Render(
+			fmt.Sprintf("Update available: %s -> %s. Run `brew upgrade airtable-tui`, `go install github.com/bond08/airtable-tui/cmd/airtable-tui@latest`, or grab a binary from the Releases page.",
+				m.version, m.updateAvailable))
+	}
 	out := topMargin + indentBlock(base+help, appMarginX)
 
 	if m.sidebarPreview != "" {

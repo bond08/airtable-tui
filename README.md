@@ -89,7 +89,7 @@ just to work with a different table in the same base.
 | Key | Action |
 |---|---|
 | `↑`/`↓`, `j`/`k` | Move selection |
-| `/` | Filter (fuzzy search) |
+| `/` | Search (fuzzy filter) |
 | `c` | Toggle showing only completed / hiding completed |
 | `s` | Set status |
 | `f` | Filter by status |

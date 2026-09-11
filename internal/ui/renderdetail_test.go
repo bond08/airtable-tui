@@ -31,7 +31,7 @@ func newTestDetailModel(t *testing.T, fieldCount int, height int, withPreview bo
 	fields = append(fields, airtable.Field{ID: "fldLong", Name: "Description", Type: "multilineText"})
 	rec.Fields["Description"] = strings.Repeat("word ", 60)
 
-	m := New(nil, "Test", "")
+	m := New(nil, "Test", "", "dev")
 	m.width, m.height = 100, height
 	m.tableSchema = airtable.Table{PrimaryFieldID: "fldTitle", Fields: fields}
 	m.allRecords = []airtable.Record{rec}
